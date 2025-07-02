@@ -22,3 +22,5 @@ yarn-error.log
 /.vscode
 /.zed
 **/.DS_Store
+!storage/app/google/
+!storage/app/google/.gitkeep
