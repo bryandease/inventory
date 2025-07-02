@@ -215,4 +215,39 @@ class FreezerInventoryController extends Controller
             'message' => 'Item not found'
         ]);
     }
+
+    public function list(Request $request): \Illuminate\Http\JsonResponse
+    {
+        $range = $this->sheetName . '!A:D';
+        $response = $this->sheetService->spreadsheets_values->get($this->spreadsheetId, $range);
+        $rows = $response->getValues() ?: [];
+
+        if (count($rows) <= 1) {
+            return response()->json(['status' => 'success', 'inventory' => []]);
+        }
+
+        $inventory = [];
+        $itemFilter = strtolower($request->query('item', ''));
+        $categoryFilter = strtolower($request->query('category', ''));
+
+        for ($i = 1; $i < count($rows); $i++) {
+            $row = $rows[$i];
+            $category = $row[0] ?? '';
+            $item = $row[1] ?? '';
+            $quantity = isset($row[2]) ? floatval($row[2]) : 0;
+            $notes = $row[3] ?? '';
+
+            if ($itemFilter && stripos($item, $itemFilter) === false) {
+                continue;
+            }
+
+            if ($categoryFilter && stripos($category, $categoryFilter) === false) {
+                continue;
+            }
+
+            $inventory[] = compact('category', 'item', 'quantity', 'notes');
+        }
+
+        return response()->json(['status' => 'success', 'inventory' => $inventory]);
+    }
 }
