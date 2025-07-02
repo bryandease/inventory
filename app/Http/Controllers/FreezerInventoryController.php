@@ -19,7 +19,20 @@ class FreezerInventoryController extends Controller
         $this->sheetName = config('services.google.sheets.sheet_tab', 'Inventory');
 
         $client = new Client();
-        $client->setAuthConfig(base_path(config('services.google.sheets.credentials_path')));
+        $encoded = config('services.google.credentials_b64');
+        $decoded = base64_decode($encoded, true);
+
+        if (!$decoded || !json_decode($decoded)) {
+            throw new \RuntimeException('Invalid base64 or JSON in GOOGLE_APPLICATION_CREDENTIALS_B64');
+        }
+
+        $tempCredentialsPath = storage_path('app/google/freezer-key.json');
+
+        if (!file_exists($tempCredentialsPath)) {
+            file_put_contents($tempCredentialsPath, $decoded);
+        }
+
+        $client->setAuthConfig($tempCredentialsPath);
         $client->addScope(Sheets::SPREADSHEETS);
 
         $this->sheetService = new Sheets($client);

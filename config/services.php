@@ -36,10 +36,10 @@ return [
     ],
 
     'google' => [
+        'credentials_b64' => env('GOOGLE_APPLICATION_CREDENTIALS_B64'),
         'sheets' => [
             'sheet_id' => env('GOOGLE_SHEET_ID'),
             'sheet_tab' => env('GOOGLE_SHEET_TAB', 'Inventory'),
-            'credentials_path' => env('GOOGLE_APPLICATION_CREDENTIALS'),
         ],
     ],
 
