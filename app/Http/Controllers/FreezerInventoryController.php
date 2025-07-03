@@ -265,15 +265,25 @@ class FreezerInventoryController extends Controller
     public function handleOpenAI(Request $request): \Illuminate\Http\JsonResponse
     {
         // 0) Log entry
-        \Log::info('[handleOpenAI] entry at ' . now()->toIso8601String());
+        \Log::info('[handleOpenAI] entry at '.now()->toIso8601String());
 
-        // 1) Validate the incoming phrase
+        // 1) Validate incoming phrase
         $validated = $request->validate([
             'phrase' => 'required|string',
         ]);
         $phrase = $validated['phrase'];
 
-        // 2) Load categories for system prompt
+        // 2) Strip off the Alexa invocation boilerplate
+        //    e.g. "ask food tracker to remove three pizzas" → "remove three pizzas"
+        $raw = preg_replace(
+            '/^(?:ask|tell|have|use)\s+food\s+tracker(?:\s+to)?\s+/i',
+            '',
+            $phrase
+        );
+        $normalized = trim(strtolower($raw));
+        \Log::info('[handleOpenAI] normalized phrase: '.$normalized);
+
+        // 3) Load your categories for the system prompt
         $sheetRange = $this->sheetName . '!A2:A';
         $resp = $this->sheetService
             ->spreadsheets_values
@@ -285,10 +295,10 @@ class FreezerInventoryController extends Controller
             ->all();
         $categoryList = implode(', ', $allowedCategories);
 
-        // 3) Build a strict system prompt
+        // 4) Build a strict system prompt
         $systemPrompt = <<<EOT
 You are a freezer inventory assistant.
-You have exactly four functions you can call—never reply in plain text, only call one function.
+You have exactly four functions—never reply in plain text, only call one function.
 Functions:
   • addInventory(item: string, quantity: number, category?: string, notes?: string)
   • removeInventory(item: string, quantity?: number)
@@ -299,20 +309,20 @@ Categories must be one of: {$categoryList}.
 Always pick exactly one function.
 EOT;
 
-        // 4) Define Prism tools (closures serialize their arguments)
+        // 5) Define the tools (closures just serialize args)
         $addTool = Tool::as('addInventory')
             ->for('Add or update an item in the freezer')
-            ->withStringParameter('item', 'Name of the item')
+            ->withStringParameter('item',     'Name of the item')
             ->withNumberParameter('quantity', 'Quantity to add')
-            ->withStringParameter('category', 'Category, one of: ' . $categoryList, false, $allowedCategories)
-            ->withStringParameter('notes', 'Optional notes', false)
+            ->withStringParameter('category', "Category, one of: {$categoryList}", false, $allowedCategories)
+            ->withStringParameter('notes',    'Optional notes', false)
             ->using(fn(string $item, float $quantity, ?string $category = null, ?string $notes = null): string =>
             json_encode(compact('item','quantity','category','notes'))
             );
 
         $removeTool = Tool::as('removeInventory')
             ->for('Remove quantity of an item from the freezer')
-            ->withStringParameter('item', 'Name of the item')
+            ->withStringParameter('item',     'Name of the item')
             ->withNumberParameter('quantity', 'Quantity to remove', false)
             ->using(fn(string $item, ?float $quantity = null): string =>
             json_encode(compact('item','quantity'))
@@ -327,31 +337,30 @@ EOT;
 
         $listTool = Tool::as('listInventory')
             ->for('List all or filtered items in the freezer')
-            ->withStringParameter('item', 'Optional item filter', false)
+            ->withStringParameter('item',     'Optional item filter', false)
             ->withStringParameter('category', 'Optional category filter', false)
             ->using(fn(?string $item = null, ?string $category = null): string =>
             json_encode(compact('item','category'))
             );
 
-        // 5) Invoke Prism/OpenAI
+        // 6) Call Prism/OpenAI
         $response = Prism::text()
             ->using(Provider::OpenAI, 'gpt-4-0613')
             ->withMaxSteps(1)
             ->withSystemPrompt($systemPrompt)
-            ->withPrompt($phrase)
+            ->withPrompt($normalized)
             ->withTools([$addTool, $removeTool, $checkTool, $listTool])
             ->withToolChoice(ToolChoice::Auto)
             ->asText();
 
-        // 6) Log which tool (if any) was called
-        \Log::info('[handleOpenAI] Prism toolCalls:', [
-            'called' => collect($response->steps[0]->toolCalls ?? [])->pluck('name')->all(),
-        ]);
+        // 7) Inspect which tool (if any) was selected
+        $toolCalls = collect($response->steps[0]->toolCalls ?? [])->pluck('name')->all();
+        \Log::info('[handleOpenAI] Prism toolCalls:', ['called' => $toolCalls]);
 
-        // 7) If Prism picked a tool, dispatch it
-        if (!empty($response->steps[0]->toolCalls)) {
+        // 8) If Prism pick a tool, dispatch it
+        if (! empty($toolCalls)) {
             $call = $response->steps[0]->toolCalls[0];
-            $args = (array)$call->arguments();
+            $args = (array) $call->arguments();
 
             switch ($call->name) {
                 case 'addInventory':
@@ -362,16 +371,16 @@ EOT;
                     ]);
 
                 case 'removeInventory':
-                    $respRemove = $this->remove(new Request($args));
-                    $dataRemove = $respRemove->getData(true);
-                    $qty  = $args['quantity'] ?? ($dataRemove['quantity'] ?? 0);
-                    $item = $args['item']     ?? '';
+                    $respRemove  = $this->remove(new Request($args));
+                    $dataRemove  = $respRemove->getData(true);
+                    $qty         = $args['quantity'] ?? ($dataRemove['quantity'] ?? 0);
+                    $item        = $args['item']     ?? '';
                     $dataRemove['speech'] = "Removed {$qty} {$item}.";
                     return response()->json($dataRemove);
 
                 case 'checkInventory':
                     $resCheck = $this->check(new Request($args))->getData(true);
-                    $speech = ($resCheck['status'] ?? '') === 'success'
+                    $speech   = ($resCheck['status'] ?? '') === 'success'
                         ? "You have {$resCheck['quantity']} {$resCheck['item']}."
                         : ($resCheck['message'] ?? 'Item not found.');
                     return response()->json([
@@ -391,28 +400,27 @@ EOT;
             }
         }
 
-        // 8) Fallback to simple regex parsing
-        \Log::warning('[handleOpenAI] no toolCalls, falling back to regex', ['phrase' => $phrase]);
-        $raw = strtolower(trim($phrase));
+        // 9) Prism didn’t pick a tool → fallback to regex on $normalized
+        \Log::warning('[handleOpenAI] no toolCalls, falling back to regex', ['phrase' => $normalized]);
 
-        // add
-        if (preg_match('/add\s+(\d+)\s+(.+)$/i', $raw, $m)) {
+        // add N ITEM
+        if (preg_match('/^add\s+(\d+)\s+(.+)$/i', $normalized, $m)) {
             $qty  = (int)$m[1];
             $item = trim($m[2]);
             $this->add(new Request(['item' => $item, 'quantity' => $qty]));
             return response()->json(['status' => 'success', 'speech' => "Added {$qty} {$item}."]);
         }
 
-        // remove
-        if (preg_match('/remove\s+(\d+)\s+(.+)$/i', $raw, $m)) {
+        // remove N ITEM
+        if (preg_match('/^remove\s+(\d+)\s+(.+)$/i', $normalized, $m)) {
             $qty  = (int)$m[1];
             $item = trim($m[2]);
             $this->remove(new Request(['item' => $item, 'quantity' => $qty]));
             return response()->json(['status' => 'success', 'speech' => "Removed {$qty} {$item}."]);
         }
 
-        // check
-        if (preg_match('/(?:how many|how much)\s+(.+?)$/i', $raw, $m)) {
+        // check ITEM
+        if (preg_match('/^(?:how many|how much)\s+(.+?)(?:\s+do we have)?$/i', $normalized, $m)) {
             $item  = trim($m[1]);
             $resCh = $this->check(new Request(['item' => $item]))->getData(true);
             $speech = ($resCh['status'] ?? '') === 'success'
@@ -421,7 +429,7 @@ EOT;
             return response()->json(['status' => $resCh['status'] ?? 'error', 'speech' => $speech]);
         }
 
-        // 9) Nothing matched
+        // 10) Nothing matched
         return response()->json([
             'status' => 'error',
             'speech' => "Sorry, I didn’t understand that. You can say add, remove, or check an item."
