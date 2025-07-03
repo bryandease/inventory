@@ -344,23 +344,27 @@ class FreezerInventoryController extends Controller
 
                 switch ($call->name) {
                     case 'addInventory':
-                        $data = $this->add(new Request($args))->json();
+                        $resp = $this->add(new Request($args));
+                        $data = $resp->getData(true);
                         $data['speech'] = "Added {$data['quantity']} {$data['item']}.";
                         return response()->json($data);
 
                     case 'removeInventory':
-                        $data = $this->remove(new Request($args))->json();
-                        $qty = $args['quantity'] ?? $data['quantity'] ?? 'some';
+                        $resp = $this->remove(new Request($args));
+                        $data = $resp->getData(true);
+                        $qty  = $args['quantity'] ?? $data['quantity'] ?? 'some';
                         $data['speech'] = "Removed {$qty} {$data['item']}.";
                         return response()->json($data);
 
                     case 'checkInventory':
-                        $data = $this->check(new Request($args))->json();
+                        $resp = $this->check(new Request($args));
+                        $data = $resp->getData(true);
                         $data['speech'] = "You have {$data['quantity']} {$data['item']}.";
                         return response()->json($data);
 
                     case 'listInventory':
-                        $data = $this->list(new Request($args))->json();
+                        $resp = $this->list(new Request($args));
+                        $data = $resp->getData(true);
                         if (empty($data['inventory'])) {
                             $speech = 'Your freezer is empty.';
                         } else {
