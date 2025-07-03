@@ -265,7 +265,7 @@ class FreezerInventoryController extends Controller
     public function handleOpenAI(Request $request): \Illuminate\Http\JsonResponse
     {
         // 0) Log entry so we know this fired
-        \Log::info('[handleOpenAI] entry at '.now()->toIso8601String());
+        \Log::info('[handleOpenAI] entry at ' . now()->toIso8601String());
 
         // 1) Validate incoming phrase
         $validated = $request->validate([
@@ -275,7 +275,9 @@ class FreezerInventoryController extends Controller
 
         // 2) Fetch existing categories for prompt and enum
         $sheetRange = $this->sheetName . '!A2:A';
-        $resp       = $this->sheetService->spreadsheets_values->get($this->spreadsheetId, $sheetRange);
+        $resp = $this->sheetService
+            ->spreadsheets_values
+            ->get($this->spreadsheetId, $sheetRange);
         $allowedCategories = collect($resp->getValues() ?: [])
             ->flatten()
             ->unique()
@@ -289,12 +291,12 @@ class FreezerInventoryController extends Controller
             . "Categories can ONLY be: {$categoryList}. "
             . "Choose exactly one function: addInventory, removeInventory, checkInventory, listInventory.";
 
-        // 4) Define tools whose closures only return their args as JSON
+        // 4) Define Prism tools (closures only serialize their arguments)
         $addTool = Tool::as('addInventory')
             ->for('Add or update an item in the freezer')
             ->withStringParameter('item',     'Name of the item')
             ->withNumberParameter('quantity', 'Quantity to add')
-            ->withStringParameter('category', 'Category, one of: '.$categoryList, false, $allowedCategories)
+            ->withStringParameter('category', 'Category, one of: ' . $categoryList, false, $allowedCategories)
             ->withStringParameter('notes',    'Optional notes', false)
             ->using(fn(string $item, float $quantity, ?string $category = null, ?string $notes = null): string =>
             json_encode(compact('item','quantity','category','notes'))
@@ -323,7 +325,7 @@ class FreezerInventoryController extends Controller
             json_encode(compact('item','category'))
             );
 
-        // 5) Invoke Prism/OpenAI
+        // 5) Invoke Prism/OpenAI with a single allowed step
         $response = Prism::text()
             ->using(Provider::OpenAI, 'gpt-4-0613')
             ->withMaxSteps(1)
@@ -333,55 +335,62 @@ class FreezerInventoryController extends Controller
             ->withToolChoice(ToolChoice::Auto)
             ->asText();
 
-        // 6) Execute exactly one CRUD method based on which tool was called
+        // 6) Dispatch exactly one CRUD call based on which tool was invoked
         foreach ($response->steps as $step) {
-            if (! empty($step->toolCalls)) {
-                $call = $step->toolCalls[0];
-                $args = (array) $call->arguments();
+            if (empty($step->toolCalls)) {
+                continue;
+            }
 
-                switch ($call->name) {
-                    case 'addInventory':
-                        $resp = $this->add(new Request($args));
-                        $data = $resp->getData(true);
-                        $data['speech'] = "Added {$data['quantity']} {$data['item']}.";
-                        return response()->json($data);
+            $call = $step->toolCalls[0];
+            $args = (array) $call->arguments();
 
-                    case 'removeInventory':
-                        $resp = $this->remove(new Request($args));
-                        $data = $resp->getData(true);
-                        $qty  = $args['quantity'] ?? $data['quantity'] ?? '';
-                        $data['speech'] = "Removed {$qty} {$data['item']}.";
-                        return response()->json($data);
+            switch ($call->name) {
+                case 'addInventory':
+                    $resp = $this->add(new Request($args));
+                    $data = $resp->getData(true);
+                    $data['speech'] = "Added {$data['quantity']} {$data['item']}.";
+                    return response()->json($data);
 
-                    case 'checkInventory':
-                        $resp = $this->check(new Request($args));
-                        $data = $resp->getData(true);
+                case 'removeInventory':
+                    $resp = $this->remove(new Request($args));
+                    $data = $resp->getData(true);
+                    // Use the controller's own message for speech
+                    $data['speech'] = $data['message'] ?? 'Item removed.';
+                    return response()->json($data);
+
+                case 'checkInventory':
+                    $resp = $this->check(new Request($args));
+                    $data = $resp->getData(true);
+                    if (isset($data['status'], $data['quantity'], $data['item']) && $data['status'] === 'success') {
                         $data['speech'] = "You have {$data['quantity']} {$data['item']}.";
-                        return response()->json($data);
+                    } else {
+                        $data['speech'] = $data['message'] ?? 'You do not have any.';
+                    }
+                    return response()->json($data);
 
-                    case 'listInventory':
-                        $resp = $this->list(new Request($args));
-                        $data = $resp->getData(true);
-                        if (empty($data['inventory'])) {
-                            $speech = 'Your freezer is empty.';
-                        } else {
-                            $lines = array_map(fn($i) => "{$i['quantity']} {$i['item']}", $data['inventory']);
-                            $speech = 'You have ' . implode(', ', $lines) . '.';
-                        }
-                        $data['speech'] = $speech;
-                        return response()->json($data);
+                case 'listInventory':
+                    $resp = $this->list(new Request($args));
+                    $data = $resp->getData(true);
+                    if (empty($data['inventory'])) {
+                        $speech = 'Your freezer is empty.';
+                    } else {
+                        // Adapt based on your inventory keys (e.g. 'qty' and 'itemName')
+                        $lines = array_map(fn($i) => "{$i['qty']} {$i['itemName']}", $data['inventory']);
+                        $speech = 'You have ' . implode(', ', $lines) . '.';
+                    }
+                    $data['speech'] = $speech;
+                    return response()->json($data);
 
-                    default:
-                        return response()->json([
-                            'status'  => 'error',
-                            'message' => 'Unknown tool: '.$call->name,
-                            'speech'  => 'Sorry, I wasn’t sure what to do.'
-                        ]);
-                }
+                default:
+                    return response()->json([
+                        'status'  => 'error',
+                        'message' => 'Unknown tool: '.$call->name,
+                        'speech'  => 'Sorry, I wasn’t sure what to do.'
+                    ]);
             }
         }
 
-        // 7) Fallback if no tool was called
+        // 7) Fallback if no tool was invoked
         return response()->json([
             'status'  => 'error',
             'message' => 'Could not determine inventory action.',
