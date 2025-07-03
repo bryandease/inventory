@@ -43,4 +43,12 @@ return [
         ],
     ],
 
+    'openapi' => [
+        'key' => env('OPENAI_API_KEY', '')
+    ],
+
+    'prism' => [
+        'token' => env('OPENAI_API_KEY'),
+    ],
+
 ];

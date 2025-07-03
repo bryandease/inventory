@@ -23548,6 +23548,39 @@ namespace Livewire {
             }
     }
 
+namespace Prism\Prism\Facades {
+    /**
+     * 
+     *
+     */
+    class PrismServer {
+        /**
+         * 
+         *
+         * @param \Closure():PendingRequest|callable():PendingRequest $prism
+         * @static 
+         */
+        public static function register($name, $prism)
+        {
+            /** @var \Prism\Prism\PrismServer $instance */
+            return $instance->register($name, $prism);
+        }
+
+        /**
+         * 
+         *
+         * @return \Prism\Prism\Collection<int, array{name: string, prism: Closure():PendingRequest|callable():PendingRequest}>
+         * @static 
+         */
+        public static function prisms()
+        {
+            /** @var \Prism\Prism\PrismServer $instance */
+            return $instance->prisms();
+        }
+
+            }
+    }
+
 namespace Illuminate\Http {
     /**
      * 
@@ -23627,27 +23660,6 @@ namespace Illuminate\Http {
         public static function hasValidRelativeSignatureWhileIgnoring($ignoreQuery = [])
         {
             return \Illuminate\Http\Request::hasValidRelativeSignatureWhileIgnoring($ignoreQuery);
-        }
-
-            }
-    }
-
-namespace Illuminate\Routing {
-    /**
-     * 
-     *
-     */
-    class Route {
-        /**
-         * 
-         *
-         * @see \Livewire\Features\SupportLazyLoading\SupportLazyLoading::registerRouteMacro()
-         * @param mixed $enabled
-         * @static 
-         */
-        public static function lazy($enabled = true)
-        {
-            return \Illuminate\Routing\Route::lazy($enabled);
         }
 
             }
@@ -23791,6 +23803,27 @@ namespace Illuminate\View {
         public static function response($callback)
         {
             return \Illuminate\View\View::response($callback);
+        }
+
+            }
+    }
+
+namespace Illuminate\Routing {
+    /**
+     * 
+     *
+     */
+    class Route {
+        /**
+         * 
+         *
+         * @see \Livewire\Features\SupportLazyLoading\SupportLazyLoading::registerRouteMacro()
+         * @param mixed $enabled
+         * @static 
+         */
+        public static function lazy($enabled = true)
+        {
+            return \Illuminate\Routing\Route::lazy($enabled);
         }
 
             }
@@ -28804,6 +28837,7 @@ namespace  {
     class Vite extends \Illuminate\Support\Facades\Vite {}
     class Flux extends \Flux\Flux {}
     class Livewire extends \Livewire\Livewire {}
+    class PrismServer extends \Prism\Prism\Facades\PrismServer {}
 }
 
 

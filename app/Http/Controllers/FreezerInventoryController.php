@@ -5,6 +5,11 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Google\Client;
 use Google\Service\Sheets;
+use Prism\Prism\Facades\Tool;
+use Prism\Prism\Prism;
+use Prism\Prism\Enums\Provider;
+use Prism\Prism\Enums\ToolChoice;
+use Illuminate\Http\JsonResponse;
 
 class FreezerInventoryController extends Controller
 {
@@ -95,14 +100,12 @@ class FreezerInventoryController extends Controller
         }
 
         if (!$found) {
-            $values = [
-                [
-                    $validated['category'] ?? '',
-                    $validated['item'],
-                    $validated['quantity'],
-                    $validated['notes'] ?? ''
-                ]
-            ];
+            $values = [[
+                $validated['category'] ?? '',
+                $validated['item'],
+                $validated['quantity'],
+                $validated['notes'] ?? ''
+            ]];
 
             $body = new Sheets\ValueRange(['values' => $values]);
             $params = ['valueInputOption' => 'USER_ENTERED'];
@@ -249,5 +252,103 @@ class FreezerInventoryController extends Controller
         }
 
         return response()->json(['status' => 'success', 'inventory' => $inventory]);
+    }
+
+    public function handleOpenAI(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'phrase' => 'required|string',
+        ]);
+
+        $phrase = $validated['phrase'];
+
+        // 2) Pull our controller‐method calls into standalone Closures
+        $addFn = function(string $item, float $quantity, ?string $category = null, ?string $notes = null): string {
+            return json_encode(
+                $this->add(
+                    new Request(compact('item','quantity','category','notes'))
+                )->getData(true)
+            );
+        };
+
+        $removeFn = function(string $item, ?float $quantity = null): string {
+            return json_encode(
+                $this->remove(
+                    new Request(compact('item','quantity'))
+                )->getData(true)
+            );
+        };
+
+        $checkFn = function(string $item): string {
+            return json_encode(
+                $this->check(
+                    new Request(['item' => $item])
+                )->getData(true)
+            );
+        };
+
+        $listFn = function(?string $item = null, ?string $category = null): string {
+            return json_encode(
+                $this->list(
+                    new Request(compact('item','category'))
+                )->getData(true)
+            );
+        };
+
+        $addTool = Tool::as('addInventory')
+            ->for('Add or update an item in the freezer')
+            ->withStringParameter('item',     'Name of the item')
+            ->withNumberParameter('quantity', 'Quantity to add')
+            ->withStringParameter('category', 'Optional category', false)
+            ->withStringParameter('notes',    'Optional notes',    false)
+            ->using($addFn);
+
+        $removeTool = Tool::as('removeInventory')
+            ->for('Remove quantity of an item from the freezer')
+            ->withStringParameter('item',     'Name of the item')
+            ->withNumberParameter('quantity', 'Quantity to remove', false)
+            ->using($removeFn);
+
+        $checkTool = Tool::as('checkInventory')
+            ->for('Check the quantity of an item in the freezer')
+            ->withStringParameter('item', 'Name of the item')
+            ->using($checkFn);
+
+        $listTool = Tool::as('listInventory')
+            ->for('List all or filtered items in the freezer')
+            ->withStringParameter('item',     'Optional item name filter', false)
+            ->withStringParameter('category', 'Optional category filter',    false)
+            ->using($listFn);
+
+        $response = Prism::text()
+            ->using(Provider::OpenAI, 'gpt-4-0613')
+            ->withMaxSteps(2)
+            ->withSystemPrompt('You are a freezer inventory assistant.')
+            ->withPrompt($phrase)
+            ->withTools([$addTool, $removeTool, $checkTool, $listTool])
+            ->withToolChoice(ToolChoice::Auto)
+            ->asText();
+
+        foreach ($response->steps as $step) {
+            if (! empty($step->toolCalls)) {
+                $call = $step->toolCalls[0];
+                $args = (array) $call->arguments();
+
+                $json = match ($call->name) {
+                    'addInventory'    => $addFn(...array_values($args)),
+                    'removeInventory' => $removeFn(...array_values($args)),
+                    'checkInventory'  => $checkFn(...array_values($args)),
+                    'listInventory'   => $listFn(...array_values($args)),
+                    default           => json_encode(['status' => 'error', 'message' => 'Unknown tool']),
+                };
+
+                return response()->json(json_decode($json, true));
+            }
+        }
+
+        return response()->json([
+            'status'  => 'error',
+            'message' => 'Could not determine inventory action.',
+        ]);
     }
 }
